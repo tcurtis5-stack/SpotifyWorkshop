@@ -1,0 +1,1940 @@
+---
+title: "SpotifyWorkshop"
+author: "Ty"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+### TABLE OF CONTENTS:
+
+
+*Graphs*
+
+- **G1-G3 --> (Visual)**
+    - Progression of 'Drake' listening graph
+
+---
+
+- **G4 --> (Visual)**
+    - Artists that I have at least 5 songs added in liked songs (6 artists specifically selected from my overall top 25 artists streamed) frequency of streams broken up by months and smoothed.
+
+---
+
+- **G5 --> (Visual)**
+    - Daily Listening Time for Top 6 Artists (All Time)
+
+---
+
+*Concepts*
+
+- **#12 --> (Concept + List)**
+    - Unlistened to Songs in Liked Songs
+
+---
+
+- **#2 --> (Visuals, Concept + Lists)**
+    - How often do we search for a "sound"?
+    - Time spent on Shuffle
+    - Spotify streaming by device
+
+---
+
+- **#6 --> (Visuals, Concept + Lists)**
+    - Clickrow Songs: What songs do I seek out?
+
+---
+
+- **#7 --> (Concept + List)**
+    - First time ever playing top song of the year (in minutes)
+
+---
+
+- **#5 --> (Visuals)**
+    - Typical day of listening by year
+    - Intentional (clickrow) plays
+        - by ARTIST
+        - by SONG
+    - STREAKS: Consecutive 'n' months an Artist spent in my Top 3 of listening minutes
+
+---
+
+- **#8 --> (Visuals, Concept + Lists)**
+    - Listening Minutes per Year
+    - Highest Day of Listening per Year
+    - Number of Unique listens per Year
+        - per Month
+
+---
+
+- **#9 --> (Concept + List)**
+    - Songs seen the Most, Playlist-to-Playlist
+    - Versatility of a Track
+
+---
+
+- **#10 --> (Concept + Lists)**
+    - Artists often listened to TOGETHER (same two-hour block)
+
+---
+
+- **#14 --> (Concept + List)**
+    - Friends-Trip Playlist
+
+---
+
+- **#15 --> (Concept + Lists)**
+    - Nostalgic Listening
+
+---
+
+### Data loading and Workshop:
+
+
+```{r,message=FALSE ,warning=FALSE}
+library(jsonlite)
+library(dplyr)
+library(lubridate)
+```
+
+```{r}
+files <- list.files("Ext.Stream.Hist", pattern = "\\.json$", full.names = TRUE) 
+
+data_list <- lapply(files, fromJSON)
+
+combined_data <- do.call(rbind, data_list)
+
+str(combined_data)
+```
+
+```{r}
+combined_data <- combined_data %>%
+  mutate(ts = ymd_hms(ts))
+```
+
+```{r}
+oct_2022 <- combined_data %>%
+  filter(ts >= ymd("2019-01-01"))
+
+top_songs_oct2022 <- oct_2022 %>%
+  filter(!is.na(master_metadata_track_name)) %>%
+  group_by(master_metadata_track_name, master_metadata_album_artist_name) %>%
+  summarize(total_ms = sum(ms_played), .groups = "drop") %>%
+  arrange(desc(total_ms)) %>%
+  
+  slice(1:27)
+
+top_songs_oct2022
+```
+
+```{r}
+sec <-  89516167/1000 
+in_minutes <- sec/60
+in_minutes
+```
+
+```{r}
+names(combined_data)
+```
+
+```{r}
+min(combined_data$ts, na.rm = TRUE)
+```
+
+```{r}
+as.Date(min(combined_data$ts, na.rm = TRUE))
+```
+
+```{r}
+account_dir <- "Account.Data"
+
+list.files(account_dir, recursive = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+account_files <- list.files(
+  account_dir,
+  pattern = "\\.json$",
+  full.names = TRUE,
+  recursive = TRUE
+)
+
+account_raw <- lapply(account_files, function(f) {
+  message("Reading: ", basename(f))
+  tryCatch(
+    fromJSON(f, flatten = TRUE),
+    error = function(e) {
+      message("  -> Skipping ", basename(f), " (", e$message, ")")
+      NULL
+    }
+  )
+})
+```
+
+```{r}
+names(account_raw) <- tools::file_path_sans_ext(basename(account_files))
+account_raw <- account_raw[!vapply(account_raw, is.null, logical(1))]
+
+names(account_raw)
+```
+
+```{r}
+your_library_raw <- account_raw$YourLibrary
+
+str(your_library_raw, max.level = 2)
+```
+
+```{r}
+names(your_library_raw)
+```
+
+```{r}
+# extract just the liked tracks table from YourLibrary
+your_library_tracks <- your_library_raw$tracks
+
+# see its structure
+str(your_library_tracks, max.level = 2)
+```
+
+```{r}
+names(your_library_tracks)
+```
+
+```{r}
+# prepare liked songs dataset for joining with streaming history
+liked_songs <- your_library_tracks %>%
+  rename(
+    track_uri = uri,
+    track_name = track,
+    artist_name = artist
+  )
+```
+
+```{r,warning=FALSE}
+# make sure timestamp in streaming history is a proper datetime
+combined_data <- combined_data %>%
+  mutate(ts = ymd_hms(ts))
+```
+
+```{r}
+# join streaming history with your liked songs
+streams_liked <- combined_data %>%
+  inner_join(liked_songs, by = c("spotify_track_uri" = "track_uri"))
+```
+
+```{r}
+# count how many liked tracks each artist has
+artists_5plus <- liked_songs %>%
+  group_by(artist_name) %>%
+  summarize(n_liked_tracks = n(), .groups = "drop") %>%
+  filter(n_liked_tracks >= 5)
+
+artists_5plus
+```
+
+```{r}
+# keep only streams from artists with >= 5 liked songs
+streams_liked_5plus <- streams_liked %>%
+  semi_join(artists_5plus, by = "artist_name")
+```
+
+```{r}
+# add a month column
+streams_liked_5plus <- streams_liked_5plus %>%
+  mutate(month = floor_date(ts, "month"))
+
+# aggregate listening by month per artist
+artist_month_counts <- streams_liked_5plus %>%
+  group_by(artist_name, month) %>%
+  summarize(
+    plays = n(),                 # number of plays
+    total_ms = sum(ms_played),  # total listening time
+    .groups = "drop"
+  )
+
+# inspect the result
+head(artist_month_counts)
+```
+
+```{r,warning=FALSE}
+library(ggplot2)
+
+# pick the artist you want to look at
+artist_to_plot <- "Drake"   # <-- change this name whenever you want
+
+artist_data <- artist_month_counts %>%
+  filter(artist_name == artist_to_plot)
+
+head(artist_data)
+```
+
+### G1-G3
+
+```{r}
+ggplot(artist_data, aes(x = month, y = plays)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = paste("Monthly plays for", artist_to_plot),
+    x = "Month",
+    y = "Number of plays"
+  ) +
+  theme_minimal()
+```
+
+```{r,message=FALSE,warning=FALSE}
+# make the figure bigger in the Rmd header for this chunk:
+# ```{r, fig.width=12, fig.height=6}
+
+artist_to_plot <- "Drake"
+
+# data for that artist
+artist_data <- artist_month_counts %>%
+  filter(artist_name == artist_to_plot) %>%
+  arrange(month)
+
+# smooth the plays with a loess curve
+fit <- loess(plays ~ as.numeric(month), data = artist_data, span = 0.25)
+artist_data$plays_smooth <- predict(fit)
+
+ggplot(artist_data, aes(x = month, y = plays_smooth)) +
+  # shaded area under the curve
+  geom_ribbon(aes(ymin = 0, ymax = plays_smooth),
+              fill = "steelblue", alpha = 0.25) +
+  # bold smoothed line
+  geom_line(color = "steelblue4", size = 1.2) +
+  labs(
+    title = paste("Monthly plays for", artist_to_plot),
+    x = "Month",
+    y = "Number of plays (smoothed)"
+  ) +
+  # nicer, less-overlapping date labels
+  scale_x_datetime(
+    date_breaks = "3 months",        # try "6 months" if still crowded
+    date_labels = "%b %Y"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(face = "bold")
+  )
+```
+
+```{r}
+artist_month_counts_all <- combined_data %>%
+  mutate(
+    ts   = ymd_hms(ts, tz = "UTC"),
+    month = floor_date(ts, "month"),
+    artist_name = master_metadata_album_artist_name
+  ) %>%
+  group_by(artist_name, month) %>%
+  summarize(
+    plays    = n(),
+    total_ms = sum(ms_played),
+    .groups = "drop"
+  )
+```
+
+
+```{r}
+artist_to_plot <- "Drake"   # can be any artist name you want
+
+# use the ALL-streams monthly data instead of liked-only
+artist_data_all <- artist_month_counts_all %>%
+  filter(artist_name == artist_to_plot) %>%
+  arrange(month)
+
+# smooth the plays (same as before)
+fit <- loess(plays ~ as.numeric(month), data = artist_data_all, span = 0.25)
+artist_data_all$plays_smooth <- predict(fit)
+
+ggplot(artist_data_all, aes(x = month, y = plays_smooth)) +
+  geom_ribbon(aes(ymin = 0, ymax = plays_smooth),
+              fill = "steelblue", alpha = 0.25) +
+  geom_line(color = "steelblue4", size = 1.2) +
+  labs(
+    title = paste("Monthly plays for", artist_to_plot),
+    x = "Month",
+    y = "Number of streams"
+  ) +
+  scale_x_datetime(
+    date_breaks = "4 months",
+    date_labels = "%b %Y",
+    expand = expansion(mult = c(0.1, 0.1))  # keep the stretched look
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x  = element_text(angle = 45, hjust = 1, size = 7),
+    plot.title   = element_text(face = "bold", size = 16)
+  )
+```
+checking boundaries:
+
+
+```{r}
+max(combined_data$ts, na.rm = TRUE)
+```
+
+```{r}
+min(combined_data$ts, na.rm = TRUE)
+```
+
+
+```{r}
+#same as above plus format changes
+
+artist_to_plot <- "Drake"  # change this to any artist name you want
+
+# use the ALL-streams monthly data instead of liked-only
+artist_data_all <- artist_month_counts_all %>%
+  filter(artist_name == artist_to_plot) %>%
+  arrange(month)
+
+# smooth the plays (same as before)
+fit <- loess(plays ~ as.numeric(month), data = artist_data_all, span = 0.25)
+artist_data_all$plays_smooth <- predict(fit)
+
+ggplot(artist_data_all, aes(x = month, y = plays_smooth)) +
+  geom_ribbon(aes(ymin = 0, ymax = plays_smooth),
+              fill = "steelblue", alpha = 0.25) +
+  geom_line(color = "steelblue4", size = 1.2) +
+  labs(
+    title = paste("Monthly plays for", artist_to_plot),
+    x = "Month",
+    y = "Number of streams"
+  ) +
+  scale_x_datetime(
+    limits = range(artist_data_all$month, na.rm = TRUE),  #cut off exactly at min/max
+    date_breaks = "4 months",
+    date_labels = "%b %Y",
+    expand = c(0, 0)                                     # no extra empty months on ends
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x  = element_text(angle = 45, hjust = 1, size = 10),  #bigger month labels
+    axis.title.x = element_text(size = 14),                         #bigger axis titles
+    axis.title.y = element_text(size = 14),
+    plot.title   = element_text(face = "bold", size = 16)
+  )
+```
+
+
+```{r}
+artist_totals <- artist_month_counts_all %>%
+  group_by(artist_name) %>%
+  summarize(total_streams = sum(plays), .groups = "drop") %>%
+  arrange(desc(total_streams))
+
+head(artist_totals, 25)
+```
+
+
+### G4
+
+```{r, message=FALSE,warning=FALSE}
+library(purrr)
+```
+
+```{r}
+# 6 artists you chose
+artists_selected <- c(
+  "Kid Cudi",
+  "The Chainsmokers",
+  "Quinn XCII",
+  "Billie Eilish",
+  "Jon Bellion",
+  "Noah Kahan"
+)
+
+# build a smoothed monthly dataset for just these artists
+multi_artist_data <- map_dfr(artists_selected, function(a) {
+  df <- artist_month_counts_all %>%
+    filter(artist_name == a) %>%
+    arrange(month)
+
+  # skip if no data for that name (just in case)
+  if (nrow(df) == 0) return(NULL)
+
+  fit <- loess(plays ~ as.numeric(month), data = df, span = 0.25)
+  df$plays_smooth <- predict(fit)
+  df
+})
+
+# make sure we actually got data
+stopifnot(nrow(multi_artist_data) > 0)
+
+ggplot(multi_artist_data,
+       aes(x = month, y = plays_smooth,
+           color = artist_name, fill = artist_name)) +
+  # shaded area under each artist's curve
+  geom_ribbon(aes(ymin = 0, ymax = plays_smooth),
+              alpha = 0.15, color = NA) +
+  # bold smoothed line
+  geom_line(size = 1.2) +
+  labs(
+    title = "Monthly plays for selected artists",
+    x = "Month",
+    y = "Number of streams (smoothed)",
+    color = "Artist",
+    fill  = "Artist"
+  ) +
+  scale_x_datetime(
+    limits = range(multi_artist_data$month, na.rm = TRUE),  # cut exactly at min/max
+    date_breaks = "3 months",
+    date_labels = "%b %Y",
+    expand = c(0, 0)
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x  = element_text(angle = 45, hjust = 1, size = 10),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    plot.title   = element_text(face = "bold", size = 16),
+    legend.position = "bottom"
+  )
+```
+
+This classified as: Artists that I have at least 5 songs added in liked songs (6 artists specifically selected from my overall top 25 artists streamed) frequency of streams broken up by months and smoothed.
+
+```{r}
+names(account_raw)[grepl("Playlist", names(account_raw))]
+```
+
+```{r}
+str(account_raw$Playlist1, max.level = 2)
+```
+
+```{r}
+# list all playlist names
+account_raw$Playlist1$playlists$name
+```
+
+So I have 21 playlists with 6 variables for each.
+
+### G5
+
+```{r}
+# get top 6 artists ever (by total streams)
+top_artists <- combined_data %>%
+  filter(!is.na(master_metadata_album_artist_name)) %>%
+  count(master_metadata_album_artist_name, sort = TRUE) %>%
+  slice_head(n = 6) %>%
+  pull(master_metadata_album_artist_name)
+
+top_artists
+```
+
+```{r}
+# filter streaming data to only those artists-- go by day
+df6 <- combined_data %>%
+  filter(master_metadata_album_artist_name %in% top_artists) %>%
+  mutate(
+    date   = as_date(ts),
+    artist = master_metadata_album_artist_name
+  ) %>%
+  group_by(date, artist) %>%
+  summarise(
+    minutes = sum(ms_played) / 60000,   # convert ms to minutes
+    .groups = "drop"
+  )
+
+# plot – same style as before
+ggplot(df6, aes(x = date, y = minutes, color = artist)) +
+  geom_line(size = 1) +
+  labs(
+    title  = "Daily Listening Time for Top 6 Artists (All Time)",
+    x      = "Date",
+    y      = "Minutes per Day",
+    color  = "Artist"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+
+### #12
+
+CLEAN SLATE- songs to get rid of = songs played 5 times or less (would be cool to add (within 6 months of having it in liked songs))
+
+*will give you a screen that has a checkmark in the top right corner (and a X in the top left corner) to confirm before deleting those songs. You CAN scroll through all of the songs to see if you are ok with deleting that cluster/rundown of songs. Deleted on accident can be recovered.
+
+This shows all the songs in my 'liked songs' that i have only played 5 times or less. 5 is just my own opinion of how many times should qualify as being not enough plays to keep in 'liked songs'. This is a good chunk of songs that would free up some download space. 
+
+```{r}
+likedsongs_amtplayed <- combined_data %>%
+  semi_join(liked_songs, by = c("spotify_track_uri" = "track_uri")) %>%
+  group_by(
+    spotify_track_uri,
+    master_metadata_track_name,
+    master_metadata_album_artist_name
+  ) %>%
+  summarise(
+    total_plays = n(),
+    total_minutes = sum(ms_played, na.rm = TRUE) / 60000,
+    .groups = "drop"
+  )
+
+liked_songs_5_or_less <- likedsongs_amtplayed %>%
+  filter(total_plays <= 5) %>%
+  arrange(total_plays, total_minutes)
+
+
+liked_songs_5_or_less
+```
+
+Keeps all tracks in 'liked songs' for at least 6 months (180 days). Meaning ive had them for 6 months and i still have only listened to them under 5 times. This eliminates the "what if I just haven't given the song long enough to know if i like it or not" type feeling.
+
+```{r}
+#finds earliest listening date for every song in my history and converts
+first_play_dates <- combined_data %>%
+  group_by(spotify_track_uri) %>%
+  summarise(
+    first_play_date = as.Date(min(ts)),
+    .groups = "drop"
+  )
+
+liked_songs_5orless_6mo <- liked_songs_5_or_less %>%
+  left_join(first_play_dates, by = "spotify_track_uri") %>%
+  filter(first_play_date <= Sys.Date() - 180)
+
+liked_songs_5orless_6mo
+```
+We had to use first time ever played instead of date liked because spotify does not release that information.
+
+
+### #2
+
+Take 2025 for example:
+```{r}
+search_q <- account_raw$SearchQueries %>%
+  mutate(
+    searchTime = gsub("\\[UTC\\]$", "", searchTime),
+    search_dt  = ymd_hms(gsub("Z$", "", searchTime), tz = "UTC"),
+    n_words    = lengths(strsplit(trimws(gsub("\\s+", " ", searchQuery)), "\\s+"))
+  ) %>%
+  filter(!is.na(search_dt),year(search_dt) == 2025, n_words >= 3) %>%
+  arrange(search_dt) %>%
+  mutate(
+    gap_sec   = as.numeric(difftime(search_dt, lag(search_dt), units = "secs")),
+    sessionID = cumsum(ifelse(is.na(gap_sec) | gap_sec > 30, 1, 0))
+  ) %>%
+  group_by(sessionID) %>%
+  slice_max(nchar(searchQuery), n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+lyric_search_month <- search_q %>%
+  mutate(month = floor_date(search_dt, "month")) %>%
+  count(month, name = "n_lyric_searches")
+
+lyric_search_year <- search_q %>%
+  mutate(year = year(search_dt)) %>%
+  count(year, name = "n_lyric_searches")
+
+lyric_search_month
+lyric_search_year
+```
+
+I classified "searching with 3 or more words" as an indication that I was trying to find a song by searching lyrics. If you agree to that connection then this is saying I searched for a song that I didn't know the name of by searching the lyrics I remembered-- 13 times last year. Not an astounding number but I am willing to bet that it happens way more across all users than me- however this is the only data I have to work with. 
+
+My point is that it happens, people search for songs in the search bar by typing in the lyrics that they remember hoping that the first song that pops up is the one in their head.
+
+```{r,message=FALSE,warning=FALSE}
+library(tidyr)
+library(ggplot2)
+
+# music only (exclude podcasts / other audio): require a track uri + track metadata
+music_data <- combined_data %>%
+  filter(!is.na(spotify_track_uri),
+         !is.na(master_metadata_track_name))
+
+# minutes on shuffle per year (music only)
+shuffle_time_year_music <- music_data %>%
+  filter(shuffle == TRUE) %>%
+  mutate(year = year(ts)) %>%
+  summarise(minutes_shuffle = sum(ms_played, na.rm = TRUE) / 60000, .by = year) %>%
+  arrange(year)
+
+shuffle_time_year_music
+```
+Here we have time spent on shuffle: 
+
+```{r}
+# percent of listening time spent on shuffle per year (music only)
+shuffle_percent_year_music <- music_data %>%
+  mutate(year = year(ts),
+         shuffle_status = ifelse(shuffle == TRUE, "shuffle", "nonshuffle")) %>%
+  summarise(minutes = sum(ms_played, na.rm = TRUE) / 60000, .by = c(year, shuffle_status)) %>%
+  group_by(year) %>%
+  mutate(
+    total_minutes = sum(minutes),
+    pct = minutes / total_minutes
+  ) %>%
+  ungroup()
+
+# table: shuffle minutes + percent (music only)
+shuffle_summary_year_music <- shuffle_percent_year_music %>%
+  filter(shuffle_status == "shuffle") %>%
+  select(year, minutes_shuffle = minutes, total_minutes, pct_shuffle = pct) %>%
+  arrange(year)
+
+shuffle_time_year_music
+shuffle_summary_year_music
+```
+
+
+```{r}
+# pie chart: shuffle vs nonshuffle per year (music only)
+ggplot(shuffle_percent_year_music, aes(x = "", y = minutes, fill = shuffle_status)) +
+  geom_col(width = 1) +
+  coord_polar(theta = "y") +
+  facet_wrap(~ year) +
+  labs(title = "Music listening time: Shuffle vs Non-shuffle by year", x = NULL, y = NULL) +
+  theme_void()
+```
+
+I am taking time spent on shuffle to also highlight how often want a certain "vibe" or type of music but do not have a specific artist in mind. 
+
+This is a huge reason that Spotify's tailored playlists are so popular! 
+
+Shows how often we are searching for a sound rather than a specific person/group.
+
+
+Here is also streamed from different devices :
+
+```{r}
+#not important-- just seeing what kind of <chr> names there are and how many
+music_data %>%
+  count(platform, sort = TRUE) %>%
+  head(5)
+```
+
+Would be much more informative with all listeners user data/ more peoples data but you can also break down how many different devices are streamed from in order
+to maybe cater certain things to devices.
+
+```{r,message=FALSE,warning=FALSE}
+library(dplyr)
+library(lubridate)
+
+music_data <- combined_data %>%
+  filter(!is.na(spotify_track_uri),
+         !is.na(master_metadata_track_name))
+
+device_time_year <- music_data %>%
+  mutate(
+    year = year(ts),
+    device_type = case_when(
+      grepl("ipad", platform, ignore.case = TRUE) ~ "Tablet",
+      grepl("iphone|ios|apple", platform, ignore.case = TRUE) ~ "Phone",
+      TRUE ~ "Computer"
+    )
+  ) %>%
+  filter(!is.na(year)) %>%
+  summarise(
+    minutes = sum(ms_played, na.rm = TRUE) / 60000,
+    .by = c(year, device_type)
+  ) %>%
+  arrange(year, desc(minutes))
+
+ggplot(device_time_year, aes(x = "", y = minutes, fill = device_type)) +
+  geom_col(width = 1) +
+  coord_polar(theta = "y") +
+  facet_wrap(~ year) +
+  labs(
+    title = "Music listening time by device type per year",
+    x = NULL, y = NULL, fill = "Device"
+  ) +
+  theme_void()
+```
+
+
+### #6
+
+
+```{r}
+combined_data %>% count(reason_start, sort = TRUE)
+```
+
+song specifically selected more than 10 times
+```{r}
+clickrow_songs_10plus <- combined_data %>%
+  filter(reason_start == "clickrow") %>%
+  group_by(
+    spotify_track_uri,
+    master_metadata_track_name,
+    master_metadata_album_artist_name
+  ) %>%
+  summarise(
+    n_clickrow = n(),
+    .groups = "drop"
+  ) %>%
+  filter(n_clickrow >= 10) %>%
+  arrange(desc(n_clickrow))
+
+clickrow_songs_10plus
+```
+
+```{r,message=FALSE,warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+
+# songs intentionally selected (clickrow) 10 or more times — track-only
+
+clickrow_songs_10plus <- combined_data %>%
+  filter(
+    reason_start == "clickrow",
+    !is.na(spotify_track_uri)
+  ) %>%
+  group_by(
+    spotify_track_uri,
+    master_metadata_track_name,
+    master_metadata_album_artist_name
+  ) %>%
+  summarise(
+    n_clickrow = n(),
+    .groups = "drop"
+  ) %>%
+  filter(n_clickrow >= 10) %>%
+  arrange(desc(n_clickrow))
+
+clickrow_songs_10plus
+
+# top 20 clickrow songs bar chart
+
+clickrow_top20 <- clickrow_songs_10plus %>%
+  slice_max(n_clickrow, n = 20)
+
+ggplot(
+  clickrow_top20,
+  aes(
+    x = reorder(master_metadata_track_name, n_clickrow),
+    y = n_clickrow
+  )
+) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Top 20 Songs seeked out",
+    x = NULL,
+    y = "Number of clickrow starts"
+  )
+```
+
+```{r}
+# song-level minutes per year (music tracks only)
+
+song_minutes_year <- combined_data %>%
+  filter(
+    !is.na(spotify_track_uri),
+    !is.na(master_metadata_track_name)
+  ) %>%
+  mutate(year = year(ts)) %>%
+  group_by(
+    year,
+    spotify_track_uri,
+    master_metadata_track_name,
+    master_metadata_album_artist_name
+  ) %>%
+  summarise(
+    total_minutes = sum(ms_played, na.rm = TRUE) / 60000,
+    clickrow_minutes = sum(ms_played[reason_start == "clickrow"], na.rm = TRUE) / 60000,
+    .groups = "drop"
+  )
+
+# top 20 per year by intentional (clickrow) listening time
+top20_clickrow_minutes_year <- song_minutes_year %>%
+  group_by(year) %>%
+  arrange(desc(clickrow_minutes), .by_group = TRUE) %>%
+  slice_head(n = 20) %>%
+  ungroup()
+
+# top 20 per year by total listening time
+top20_total_minutes_year <- song_minutes_year %>%
+  group_by(year) %>%
+  arrange(desc(total_minutes), .by_group = TRUE) %>%
+  slice_head(n = 20) %>%
+  ungroup()
+
+top20_clickrow_minutes_year
+top20_total_minutes_year
+```
+
+```{r,message=FALSE,warning=FALSE}
+library(dplyr)
+library(ggplot2)
+
+# build top 10 lists per year for total minutes and clickrow minutes
+top10_both_year <- bind_rows(
+  song_minutes_year %>%
+    group_by(year) %>%
+    arrange(desc(total_minutes), .by_group = TRUE) %>%
+    slice_head(n = 10) %>%
+    mutate(metric = "Total minutes", metric_minutes = total_minutes) %>%
+    ungroup(),
+
+  song_minutes_year %>%
+    group_by(year) %>%
+    arrange(desc(clickrow_minutes), .by_group = TRUE) %>%
+    slice_head(n = 10) %>%
+    mutate(metric = "Clickrow minutes", metric_minutes = clickrow_minutes) %>%
+    ungroup()
+) %>%
+  group_by(year, metric) %>%
+  mutate(rank = row_number()) %>%
+  ungroup() %>%
+  mutate(
+    song_label = paste0(master_metadata_track_name, " — ", master_metadata_album_artist_name)
+  )
+
+top10_both_year
+```
+
+**2019**
+```{r, message=FALSE,warning=FALSE}
+library(dplyr)
+
+# 2019: top 10 by total minutes
+top10_total_2019 <- song_minutes_year %>%
+  filter(year == 2019) %>%
+  arrange(desc(total_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    total_song = master_metadata_track_name,
+    total_artist = master_metadata_album_artist_name,
+    total_minutes
+  )
+
+# 2019: top 10 by clickrow minutes
+top10_clickrow_2019 <- song_minutes_year %>%
+  filter(year == 2019) %>%
+  arrange(desc(clickrow_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    clickrow_song = master_metadata_track_name,
+    clickrow_artist = master_metadata_album_artist_name,
+    clickrow_minutes
+  )
+
+# side-by-side (rank 1–10)
+top10_side_by_side_2019 <- full_join(top10_total_2019, top10_clickrow_2019, by = "rank") %>%
+  arrange(rank)
+
+top10_side_by_side_2019
+```
+
+**2020**
+```{r}
+top10_total_2020 <- song_minutes_year %>%
+  filter(year == 2020) %>%
+  arrange(desc(total_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    total_song = master_metadata_track_name,
+    total_artist = master_metadata_album_artist_name,
+    total_minutes
+  )
+
+# 2019: top 10 by clickrow minutes
+top10_clickrow_2020 <- song_minutes_year %>%
+  filter(year == 2020) %>%
+  arrange(desc(clickrow_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    clickrow_song = master_metadata_track_name,
+    clickrow_artist = master_metadata_album_artist_name,
+    clickrow_minutes
+  )
+
+# side-by-side (rank 1–10)
+top10_side_by_side_2020 <- full_join(top10_total_2020, top10_clickrow_2020, by = "rank") %>%
+  arrange(rank)
+
+top10_side_by_side_2020
+```
+
+**2021**
+```{r}
+top10_total_2021 <- song_minutes_year %>%
+  filter(year == 2021) %>%
+  arrange(desc(total_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    total_song = master_metadata_track_name,
+    total_artist = master_metadata_album_artist_name,
+    total_minutes
+  )
+
+# 2019: top 10 by clickrow minutes
+top10_clickrow_2021 <- song_minutes_year %>%
+  filter(year == 2021) %>%
+  arrange(desc(clickrow_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    clickrow_song = master_metadata_track_name,
+    clickrow_artist = master_metadata_album_artist_name,
+    clickrow_minutes
+  )
+
+# side-by-side (rank 1–10)
+top10_side_by_side_2021 <- full_join(top10_total_2021, top10_clickrow_2021, by = "rank") %>%
+  arrange(rank)
+
+top10_side_by_side_2021
+```
+
+**2022**
+```{r}
+top10_total_2022 <- song_minutes_year %>%
+  filter(year == 2022) %>%
+  arrange(desc(total_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    total_song = master_metadata_track_name,
+    total_artist = master_metadata_album_artist_name,
+    total_minutes
+  )
+
+# 2019: top 10 by clickrow minutes
+top10_clickrow_2022 <- song_minutes_year %>%
+  filter(year == 2022) %>%
+  arrange(desc(clickrow_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    clickrow_song = master_metadata_track_name,
+    clickrow_artist = master_metadata_album_artist_name,
+    clickrow_minutes
+  )
+
+# side-by-side (rank 1–10)
+top10_side_by_side_2022 <- full_join(top10_total_2022, top10_clickrow_2022, by = "rank") %>%
+  arrange(rank)
+
+top10_side_by_side_2022
+```
+
+**2023**
+```{r}
+top10_total_2023 <- song_minutes_year %>%
+  filter(year == 2023) %>%
+  arrange(desc(total_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    total_song = master_metadata_track_name,
+    total_artist = master_metadata_album_artist_name,
+    total_minutes
+  )
+
+# 2019: top 10 by clickrow minutes
+top10_clickrow_2023 <- song_minutes_year %>%
+  filter(year == 2023) %>%
+  arrange(desc(clickrow_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    clickrow_song = master_metadata_track_name,
+    clickrow_artist = master_metadata_album_artist_name,
+    clickrow_minutes
+  )
+
+# side-by-side (rank 1–10)
+top10_side_by_side_2023 <- full_join(top10_total_2023, top10_clickrow_2023, by = "rank") %>%
+  arrange(rank)
+
+top10_side_by_side_2023
+```
+
+**2024**
+```{r}
+top10_total_2024 <- song_minutes_year %>%
+  filter(year == 2024) %>%
+  arrange(desc(total_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    total_song = master_metadata_track_name,
+    total_artist = master_metadata_album_artist_name,
+    total_minutes
+  )
+
+# 2019: top 10 by clickrow minutes
+top10_clickrow_2024 <- song_minutes_year %>%
+  filter(year == 2024) %>%
+  arrange(desc(clickrow_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    clickrow_song = master_metadata_track_name,
+    clickrow_artist = master_metadata_album_artist_name,
+    clickrow_minutes
+  )
+
+# side-by-side (rank 1–10)
+top10_side_by_side_2024 <- full_join(top10_total_2024, top10_clickrow_2024, by = "rank") %>%
+  arrange(rank)
+
+top10_side_by_side_2024
+```
+
+**2025**
+```{r}
+top10_total_2025 <- song_minutes_year %>%
+  filter(year == 2025) %>%
+  arrange(desc(total_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    total_song = master_metadata_track_name,
+    total_artist = master_metadata_album_artist_name,
+    total_minutes
+  )
+
+# 2019: top 10 by clickrow minutes
+top10_clickrow_2025 <- song_minutes_year %>%
+  filter(year == 2025) %>%
+  arrange(desc(clickrow_minutes)) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  transmute(
+    rank,
+    clickrow_song = master_metadata_track_name,
+    clickrow_artist = master_metadata_album_artist_name,
+    clickrow_minutes
+  )
+
+# side-by-side (rank 1–10)
+top10_side_by_side_2025 <- full_join(top10_total_2025, top10_clickrow_2025, by = "rank") %>%
+  arrange(rank)
+
+top10_side_by_side_2025
+```
+
+As you can see, the most played track is not always the most searched for... So for example maybe I think HOROSCOPE(feat. Pharrell Williams) by Jon Bellion is what I searched for a lot this year and then I get my spotify wrapped and I am like omg its not even in my top ten. Its because I kept having it stuck in my head so I was specifically searching for it to play it rather than making it a common part of my listening habits or part of a playlist I made.
+
+The songs you specifically search for the most are often not your overall top listened to because maybe you just had a phase and eventually it wasn't stuck in your head anymore. The top songs with the highest ms_played are the ones that are your top songs are much more indicative of you listening to that song over a longer period.
+
+High total mins AND high clickrow frequency means strong personal connection.
+
+
+### #7
+
+
+```{r,message=FALSE,warning=FALSE}
+library(dplyr)
+library(lubridate)
+
+# first-ever play date for each song
+first_play_dates <- combined_data %>%
+  filter(
+    !is.na(spotify_track_uri),
+    !is.na(master_metadata_track_name)
+  ) %>%
+  group_by(spotify_track_uri) %>%
+  summarise(
+    first_play_date = as.Date(min(ts)),
+    .groups = "drop"
+  )
+
+# total minutes per song per year
+song_minutes_year <- combined_data %>%
+  filter(
+    !is.na(spotify_track_uri),
+    !is.na(master_metadata_track_name)
+  ) %>%
+  mutate(year = year(ts)) %>%
+  group_by(
+    year,
+    spotify_track_uri,
+    master_metadata_track_name,
+    master_metadata_album_artist_name
+  ) %>%
+  summarise(
+    total_minutes = sum(ms_played, na.rm = TRUE) / 60000,
+    .groups = "drop"
+  )
+
+top_song_each_year <- song_minutes_year %>%
+  filter(!is.na(year), year <= 2025) %>%
+  group_by(year) %>%
+  slice_max(total_minutes, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  left_join(first_play_dates, by = "spotify_track_uri") %>%
+  arrange(year)
+
+top_song_each_year
+```
+
+This shows a pretty even split for when the prime "find your top song" season is-- either summer or right away in the beginning of the year. May want to exclude 2021 top song because I first heard it in 2020 which probably means it wasn't an instant favorite.
+
+
+
+### #5
+
+
+```{r,message=FALSE,warning=FALSE}
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+
+hourly_minutes_year <- combined_data %>%
+  filter(
+    !is.na(ts),
+    !is.na(ms_played),
+    !is.na(spotify_track_uri)
+  ) %>%
+  mutate(
+    year = year(ts),
+    hour = hour(ts),
+    minutes_played = ms_played / 60000
+  ) %>%
+  group_by(year, hour) %>%
+  summarise(
+    total_minutes = sum(minutes_played, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(year) %>%
+  mutate(
+    share_minutes = total_minutes / sum(total_minutes)
+  ) %>%
+  ungroup()
+
+hourly_minutes_year
+```
+
+```{r, message=FALSE, warning=FALSE, fig.width= 16, fig.height= 9}
+ggplot(hourly_minutes_year,
+       aes(x = hour, y = share_minutes)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(
+    method = "loess",
+    span = 0.4,
+    se = FALSE
+  ) +
+  facet_wrap(~ year, ncol = 2) +
+  scale_x_continuous(breaks = 0:23) +
+  labs(
+    title = "Average Listening Time by Hour of Day (Per Year)",
+    x = "Hour of day",
+    y = "Share of yearly listening time"
+  ) +
+  theme_minimal()
+```
+
+This is a typical listening day each year. 
+
+
+Intentional plays by artist and by song all time:
+```{r}
+# all-time intentional listens (clickrow) by ARTIST
+clickrow_artist_alltime <- combined_data %>%
+  filter(
+    reason_start == "clickrow",
+    !is.na(spotify_track_uri),
+    !is.na(master_metadata_album_artist_name)
+  ) %>%
+  group_by(master_metadata_album_artist_name) %>%
+  summarise(
+    n_clickrow = n(),
+    total_minutes_clickrow = sum(ms_played, na.rm = TRUE) / 60000,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n_clickrow), desc(total_minutes_clickrow))
+
+clickrow_artist_alltime
+
+# all-time intentional listens (clickrow) by SONG
+clickrow_song_alltime <- combined_data %>%
+  filter(
+    reason_start == "clickrow",
+    !is.na(spotify_track_uri),
+    !is.na(master_metadata_track_name),
+    !is.na(master_metadata_album_artist_name)
+  ) %>%
+  group_by(
+    spotify_track_uri,
+    master_metadata_track_name,
+    master_metadata_album_artist_name
+  ) %>%
+  summarise(
+    n_clickrow = n(),
+    total_minutes_clickrow = sum(ms_played, na.rm = TRUE) / 60000,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n_clickrow), desc(total_minutes_clickrow))
+
+clickrow_song_alltime
+```
+
+Clickrows by artist:
+```{r}
+top6_clickrow_artists <- clickrow_artist_alltime %>%
+  slice_head(n = 6)
+
+ggplot(
+  top6_clickrow_artists,
+  aes(
+    x = reorder(master_metadata_album_artist_name, n_clickrow),
+    y = n_clickrow
+  )
+) +
+  geom_col() +
+  geom_text(
+    aes(label = n_clickrow),
+    nudge_y = -25,
+    color = "white",
+    size = 4
+  ) +
+  coord_flip() +
+  labs(
+    title = "Top 6 Artists by Intentional Listening (Clickrow)",
+    x = NULL,
+    y = "Number of clickrow starts"
+  ) +
+  theme_minimal()
+```
+
+clickrow by song:
+```{r}
+top6_clickrow_songs <- clickrow_song_alltime %>%
+  slice_head(n = 6)
+
+ggplot(
+  top6_clickrow_songs,
+  aes(
+    x = reorder(master_metadata_track_name, n_clickrow),
+    y = n_clickrow
+  )
+) +
+  geom_col() +
+  geom_text(
+    aes(label = n_clickrow),
+    nudge_y = -5,
+    color = "white",
+    size = 4
+  ) +
+  coord_flip() +
+  labs(
+    title = "Top 6 Songs by Intentional Listening (Clickrow)",
+    x = NULL,
+    y = "Number of clickrow starts"
+  ) +
+  theme_minimal()
+```
+
+STREAKS:
+
+```{r,message=FALSE,warning=FALSE}
+library(dplyr)
+library(lubridate)
+
+# monthly minutes (music only)
+music_data <- combined_data %>%
+  filter(
+    !is.na(ts),
+    !is.na(ms_played),
+    !is.na(spotify_track_uri),
+    !is.na(master_metadata_track_name),
+    !is.na(master_metadata_album_artist_name)
+  ) %>%
+  mutate(month = floor_date(ts, "month"))
+
+# ARTIST: top 3 each month + streaks (>= 2 consecutive months)
+artist_monthly <- music_data %>%
+  group_by(month, master_metadata_album_artist_name) %>%
+  summarise(
+    total_minutes = sum(ms_played, na.rm = TRUE) / 60000,
+    .groups = "drop"
+  )
+
+artist_top3 <- artist_monthly %>%
+  group_by(month) %>%
+  arrange(desc(total_minutes), .by_group = TRUE) %>%
+  slice_head(n = 3) %>%
+  ungroup() %>%
+  arrange(master_metadata_album_artist_name, month) %>%
+  group_by(master_metadata_album_artist_name) %>%
+  mutate(
+    month_gap = as.integer(interval(lag(month), month) %/% months(1)),
+    streak_id = cumsum(is.na(month_gap) | month_gap != 1)
+  ) %>%
+  group_by(master_metadata_album_artist_name, streak_id) %>%
+  summarise(
+    start_month = min(month),
+    end_month = max(month),
+    n_consecutive_months = n(),
+    avg_top3_minutes = mean(total_minutes),
+    .groups = "drop"
+  ) %>%
+  filter(n_consecutive_months >= 2) %>%
+  arrange(desc(n_consecutive_months), desc(avg_top3_minutes))
+
+artist_top3_streaks <- artist_top3
+
+# SONG: top 3 each month + streaks (>= 2 consecutive months)
+song_monthly <- music_data %>%
+  group_by(month, spotify_track_uri, master_metadata_track_name, master_metadata_album_artist_name) %>%
+  summarise(
+    total_minutes = sum(ms_played, na.rm = TRUE) / 60000,
+    .groups = "drop"
+  )
+
+song_top3 <- song_monthly %>%
+  group_by(month) %>%
+  arrange(desc(total_minutes), .by_group = TRUE) %>%
+  slice_head(n = 3) %>%
+  ungroup() %>%
+  arrange(spotify_track_uri, month) %>%
+  group_by(spotify_track_uri) %>%
+  mutate(
+    month_gap = as.integer(interval(lag(month), month) %/% months(1)),
+    streak_id = cumsum(is.na(month_gap) | month_gap != 1)
+  ) %>%
+  group_by(spotify_track_uri, master_metadata_track_name, master_metadata_album_artist_name, streak_id) %>%
+  summarise(
+    start_month = min(month),
+    end_month = max(month),
+    n_consecutive_months = n(),
+    avg_top3_minutes = mean(total_minutes),
+    .groups = "drop"
+  ) %>%
+  filter(n_consecutive_months >= 2) %>%
+  arrange(desc(n_consecutive_months), desc(avg_top3_minutes))
+
+song_top3_streaks <- song_top3
+
+artist_top3_streaks
+song_top3_streaks
+```
+
+
+### #8
+
+
+minutes played per year:
+
+```{r,message=FALSE,warning=FALSE}
+library(ggplot2)
+
+minutes_per_year <- combined_data %>%
+  filter(
+    !is.na(ts),
+    !is.na(ms_played),
+    !is.na(spotify_track_uri)
+  ) %>%
+  mutate(year = year(ts)) %>%
+  group_by(year) %>%
+  summarise(
+    total_minutes = sum(ms_played, na.rm = TRUE) / 60000,
+    .groups = "drop"
+  ) %>%
+  arrange(year)
+
+ggplot(minutes_per_year,
+       aes(x = factor(year), y = total_minutes)) +
+  geom_col() +
+  geom_text(
+    aes(label = round(total_minutes)),
+    vjust = 5,
+    color = "white",
+    size = 4,
+    fontface = "bold"
+  ) +
+  labs(
+    title = "Total Listening Time per Year",
+    x = "Year",
+    y = "Total minutes listened"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# day with most listening minutes in each year
+max_day_each_year <- combined_data %>%
+  filter(
+    !is.na(ts),
+    !is.na(ms_played),
+    !is.na(spotify_track_uri)
+  ) %>%
+  mutate(
+    year = year(ts),
+    date = as.Date(ts),
+    minutes_played = ms_played / 60000
+  ) %>%
+  group_by(year, date) %>%
+  summarise(
+    total_minutes = sum(minutes_played, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(year), year <= 2025) %>%
+  group_by(year) %>%
+  slice_max(total_minutes, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(year) %>%
+  mutate(date_label = format(date, "%m/%d/%y"))
+
+# x-axis labels: map each year -> its max-day date label
+date_labels <- setNames(max_day_each_year$date_label, max_day_each_year$year)
+
+ggplot(max_day_each_year, aes(x = factor(year), y = total_minutes)) +
+  geom_col() +
+  geom_text(
+    aes(label = round(total_minutes)),
+    vjust = 5,
+    color = "white",
+    size = 4,
+    fontface = "bold"
+  ) +
+  scale_x_discrete(labels = date_labels) +
+  labs(
+    title = "Highest Listening Day Each Year",
+    x = "Date of max listening day (MM/DD/YY)",
+    y = "Minutes listened on that day"
+  ) +
+  theme_minimal()
+```
+
+still 8:
+
+```{r}
+unique_songs_year <- combined_data %>%
+  filter(
+    !is.na(ts),
+    !is.na(spotify_track_uri)
+  ) %>%
+  mutate(year = year(ts)) %>%
+  group_by(year) %>%
+  summarise(
+    n_unique_songs = n_distinct(spotify_track_uri),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(year), year <= 2025) %>%
+  arrange(year)
+
+unique_songs_year
+```
+
+
+```{r}
+unique_songs_month <- combined_data %>%
+  filter(
+    !is.na(ts),
+    !is.na(spotify_track_uri)
+  ) %>%
+  mutate(month = floor_date(ts, "month")) %>%
+  group_by(month) %>%
+  summarise(
+    n_unique_songs = n_distinct(spotify_track_uri),
+    .groups = "drop"
+  ) %>%
+  arrange(month)
+
+unique_songs_month
+```
+
+
+```{r}
+ggplot(unique_songs_year,
+       aes(x = factor(year), y = n_unique_songs)) +
+  geom_col() +
+  geom_text(
+    aes(label = n_unique_songs),
+    vjust = -0.3,
+    size = 3
+  ) +
+  labs(
+    title = "Number of Unique Songs Listened to per Year",
+    x = "Year",
+    y = "Unique songs"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+ggplot(unique_songs_month,
+       aes(x = month, y = n_unique_songs)) +
+  geom_line() +
+  geom_point(alpha = 0.6) +
+  labs(
+    title = "Unique Songs Listened to per Month",
+    x = "Month",
+    y = "Unique songs"
+  ) +
+  theme_minimal()
+```
+
+
+### #9
+
+
+what songs are most commonly seen across multiple playlists?
+
+Im thinking that this could show the versatility of that song and that in can be listened to in many different moods. So the songs that pop up the most in playlists are the most versatile. 
+
+I am thinking that if a person has enough playlists (p), and they have enough songs (s) in each playlist, then you could use this to make a tailored playlist of "comfort music" and in it are the n number of of songs in order of hgihest prevelance across all playlist-- sayyyy the top 25-30 or so songs.
+
+
+```{r,message=FALSE,warning=FALSE}
+library(dplyr)
+library(tidyr)
+
+playlist_items <- account_raw$Playlist1$playlists %>%
+  tibble::as_tibble() %>%
+  transmute(
+    playlist_name = name,
+    items
+  ) %>%
+  unnest_longer(items) %>%
+  unnest(items)
+
+song_playlist_counts <- playlist_items %>%
+  filter(!is.na(track.trackUri)) %>%
+  group_by(
+    spotify_track_uri = track.trackUri,
+    track_name = track.trackName,
+    artist_name = track.artistName
+  ) %>%
+  summarise(
+    n_playlists = n_distinct(playlist_name),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n_playlists))
+
+song_playlist_counts
+
+```
+
+
+And now we can take 2 approaches here: we can randomly select songs, or we could do something like filter this list to all songs 
+found in at least 5 playlists (or 3 or whatever you prefer) and then that playlist could be named "comfort songs".
+
+Also- if you wanted to do this but with artists--- you could use that list to suggest songs in a playlist (kind of like the genius shuffle feature but for a playlist but it only shuffles the artists you tell it to).
+
+
+### #10
+
+
+times that two artists are played within the same 2 hour block of time:
+
+```{r,message=FALSE,warning=FALSE}
+
+library(purrr)
+library(lubridate)
+library(tidyr)
+
+# build 2-hour listening blocks (music only)
+artist_blocks <- combined_data %>%
+  filter(
+    !is.na(master_metadata_album_artist_name),
+    !is.na(ts),
+    !is.na(spotify_track_uri)
+  ) %>%
+  mutate(
+    block_start = floor_date(ts, unit = "2 hours")
+  ) %>%
+  distinct(block_start, master_metadata_album_artist_name)
+
+# generate artist pairs within each block
+artist_pairs <- artist_blocks %>%
+  group_by(block_start) %>%
+  summarise(
+    artists = list(sort(unique(master_metadata_album_artist_name))),
+    .groups = "drop"
+  ) %>%
+  filter(lengths(artists) >= 2) %>%
+  mutate(pairs = purrr::map(artists, ~ combn(.x, 2, simplify = FALSE))) %>%
+  select(pairs) %>%
+  unnest(pairs) %>%
+  transmute(
+    artist_1 = map_chr(pairs, 1),
+    artist_2 = map_chr(pairs, 2)
+  )
+
+# gount how often each artist pair appears together
+top_artist_pairs <- artist_pairs %>%
+  count(artist_1, artist_2, name = "n_shared_blocks") %>%
+  arrange(desc(n_shared_blocks))
+
+top_artist_pairs
+
+```
+
+IN-PROGRESS:
+```{r,message=FALSE,warning=FALSE}
+library(dplyr)
+library(igraph)
+library(ggraph)
+
+# keep only meaningful connections (cut noise)
+artist_edges <- top_artist_pairs %>%
+  filter(n_shared_blocks >= 10)   # adjust if needed
+
+artist_graph <- graph_from_data_frame(
+  artist_edges,
+  directed = FALSE
+)
+
+ggraph(artist_graph, layout = "fr") +
+  geom_edge_link(aes(width = n_shared_blocks), alpha = 0.4) +
+  geom_node_point(size = 4, color = "steelblue") +
+  geom_node_text(aes(label = name), repel = TRUE, size = 3) +
+  scale_edge_width(range = c(0.5, 3)) +
+  labs(
+    title = "Artist Co-Listening Network (2-Hour Blocks)",
+    edge_width = "Shared listening blocks"
+  ) +
+  theme_void()
+```
+will need to mess with this more because I need a 3D model.
+END OF THIS BETA VERSION
+
+most common trios of artist found within the same 2 hour block:
+```{r}
+artist_trios <- artist_blocks %>%
+  group_by(block_start) %>%
+  summarise(
+    artists = list(sort(unique(master_metadata_album_artist_name))),
+    .groups = "drop"
+  ) %>%
+  filter(lengths(artists) >= 3, lengths(artists) <= 12) %>%
+  mutate(
+    trios = purrr::map(artists, ~ combn(.x, 3, simplify = FALSE))
+  ) %>%
+  select(trios) %>%
+  tidyr::unnest(trios) %>%
+  transmute(
+    artist_1 = purrr::map_chr(trios, 1),
+    artist_2 = purrr::map_chr(trios, 2),
+    artist_3 = purrr::map_chr(trios, 3)
+  ) %>%
+  count(artist_1, artist_2, artist_3, name = "n_shared_blocks") %>%
+  arrange(desc(n_shared_blocks))
+
+artist_trios
+```
+
+this is where at least one of the artist was clickrow (intentionally played), this eliminates the coincidence that they just happened to be played near each
+other and accounts for: maybe I was listening to an artist and it reminded me of another artist so I looked them up and clickrow started one of their tracks.
+
+```{r,message=FALSE, warning=FALSE}
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(purrr)
+
+# 2-hour blocks/artist presence/whether that artist was clickrow within the block
+artist_block_flags <- combined_data %>%
+  filter(
+    !is.na(ts),
+    !is.na(spotify_track_uri),
+    !is.na(master_metadata_album_artist_name)
+  ) %>%
+  mutate(block_start = floor_date(ts, "2 hours")) %>%
+  group_by(block_start, master_metadata_album_artist_name) %>%
+  summarise(
+    artist_clickrow_in_block = any(reason_start == "clickrow", na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# build the pairs within each block -> keep only pairs where at least 1 artist is clickrow in that block
+artist_pairs_clickrow1plus <- artist_block_flags %>%
+  group_by(block_start) %>%
+  summarise(
+    artists = list(sort(unique(master_metadata_album_artist_name))),
+    clickrow_artists = list(sort(unique(master_metadata_album_artist_name[artist_clickrow_in_block]))),
+    .groups = "drop"
+  ) %>%
+  filter(lengths(artists) >= 2) %>%
+  mutate(
+    pairs = map(artists, ~ combn(.x, 2, simplify = FALSE))
+  ) %>%
+  select(block_start, pairs, clickrow_artists) %>%
+  unnest(pairs) %>%
+  transmute(
+    block_start,
+    artist_1 = map_chr(pairs, 1),
+    artist_2 = map_chr(pairs, 2),
+    keep_pair = (artist_1 %in% clickrow_artists) | (artist_2 %in% clickrow_artists)
+  ) %>%
+  filter(keep_pair) %>%
+  count(artist_1, artist_2, name = "n_shared_blocks") %>%
+  arrange(desc(n_shared_blocks))
+
+artist_pairs_clickrow1plus
+```
+the counts do not look that different, in fact this looks identical to the list of artist PAIRS above that does not filter with clickrow like this does. However it is important to note that its in order of highest counts to lowest, so this just means that the "at least one is clickrow" already applied to our top ten before we even filtered for that.
+
+You'll notice that the overall number of rows has gone down significantly (about 70,000 less) so we did filter at least some pairs.
+
+
+
+### #14
+
+
+You have a group of friends getting together and you all have a fairly unique music taste.
+
+take the most frequently listened to songs by each user (in this case just me). So lets do most listened to over the last week and then randomly select 7 songs from the top 25.
+
+```{r,message=FALSE,warning=FALSE}
+library(dplyr)
+library(lubridate)
+
+set.seed(14)  # keep the "random 7" reproducible -> change if you want new picks
+
+# most recent 7-day window in your data
+latest_day <- as.Date(max(combined_data$ts, na.rm = TRUE))
+start_day  <- latest_day - days(6)
+
+# top 25 songs in that window (by total minutes), then random 7 from those 25
+top25_last7days <- combined_data %>%
+  filter(
+    !is.na(ts),
+    !is.na(ms_played),
+    !is.na(spotify_track_uri),
+    as.Date(ts) >= start_day,
+    as.Date(ts) <= latest_day
+  ) %>%
+  group_by(
+    spotify_track_uri,
+    master_metadata_track_name,
+    master_metadata_album_artist_name
+  ) %>%
+  summarise(
+    total_minutes = sum(ms_played, na.rm = TRUE) / 60000,
+    n_plays = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_minutes), desc(n_plays)) %>%
+  slice_head(n = 25)
+
+random7_from_top25 <- top25_last7days %>%
+  slice_sample(n = 7)
+
+latest_day
+start_day
+top25_last7days
+random7_from_top25
+```
+
+Now we have 7 songs that we know I will know and like. Now imagine having 6-7 friends do the exact same thing and we now have 42-49 songs to add to a playlist for when we all hang out or get together and want some music in the background.That is (ballpark) a 4 hour playlist which is perfect.
+
+If you have less friends at the function- increase the number of randomly selected tracks from your top 25. if you have more, decrease the number of tracks selected from each person.
+
+This would also be cool to be able to filter by mood of the song like how you already can in 'likedsongs' on spotify.
+Filters such as: "party" or "upbeat" or "chill" so that you can filter that playlist based on the mood of the setting.
+
+This would require authorization from Spotipy or API to analyze beats and things like that so that i could filter but it is a cool idea. Would also need more songs for the filters to not filter to like 8 songs total.
+
+
+### #15
+
+
+If you hear a song and youre like "oh my god I used to listen to that all the time" but you can't remember what songs you used to listen to around that time. 
+
+There could be a "time-period" button listed next to 'add to queue' on the drop down menu from the three dots in the top right corner of your phone in the Spotify app. And it will take you to a set list of time periods that you most frequently listen to that particular song and what other songs at the time were found near it in ms_played function.
+```{r,message=FALSE,warning=FALSE}
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(purrr)
+
+# ordered listening rows with week + row_id
+listening_ordered <- combined_data %>%
+  filter(!is.na(ts),
+         !is.na(spotify_track_uri),
+         !is.na(master_metadata_track_name),
+         !is.na(master_metadata_album_artist_name)) %>%
+  arrange(ts) %>%
+  mutate(
+    row_id = row_number(),
+    week = floor_date(ts, "week", week_start = 1)
+  )
+
+# rows where the track is Wounds by QuinnXCII (robust artist match)
+wounds_rows <- listening_ordered %>%
+  filter(
+    tolower(master_metadata_track_name) == "wounds",
+    grepl("quinn", master_metadata_album_artist_name, ignore.case = TRUE)
+  ) %>%
+  select(week, row_id, ts)
+
+# weeks where Wounds appears >= 5 times
+wounds_weeks <- wounds_rows %>%
+  count(week, name = "n_wounds") %>%
+  filter(n_wounds >= 5) %>%
+  arrange(week)
+
+wounds_weeks
+
+# all songs within +/- 5 plays of EACH Wounds play, within the SAME week
+wounds_around_all <- wounds_rows %>%
+  semi_join(wounds_weeks, by = "week") %>%
+  mutate(
+    context_row_id = map(row_id, ~ (.x - 5):(.x + 5))
+  ) %>%
+  unnest(context_row_id) %>%
+  left_join(
+    listening_ordered %>%
+      select(row_id, week, ts,
+             spotify_track_uri,
+             master_metadata_track_name,
+             master_metadata_album_artist_name),
+    by = c("context_row_id" = "row_id")
+  ) %>%
+  filter(
+    !is.na(spotify_track_uri),
+    week.y == week.x,                 # keep only plays in the same week
+    context_row_id != row_id          # drop the Wounds play itself
+  ) %>%
+  transmute(
+    week = week.x,
+    wounds_ts = ts.x,                 # timestamp of the specific Wounds play
+    context_ts = ts.y,                # timestamp of the surrounding play
+    offset = context_row_id - row_id, # -5..-1, +1..+5
+    spotify_track_uri,
+    track_name = master_metadata_track_name,
+    artist_name = master_metadata_album_artist_name
+  ) %>%
+  arrange(week, wounds_ts, offset) 
+
+wounds_around_all
+```
+
+
+gets rid of duplicates and returns how often that song was + or -5 from "Wounds":
+```{r}
+week_pick <- as.Date("2020-07-13")  # <-- change this
+
+wounds_week_songs <- wounds_around_all %>%
+  filter(week == week_pick) %>%
+  count(spotify_track_uri, track_name, artist_name, name = "n_around_wounds") %>%
+  arrange(desc(n_around_wounds), track_name, artist_name)
+
+wounds_week_songs
+```
+
+so during the week of 2020-07-13 I most commonly listened The Bigger Picture by Lil Baby around the time i listened to "Wounds" by QuinnXCII. And now you have a playlist of song that take you back to that specific time period. If this doesn't seem right to you or think that you were maybe thinking of songs during another "Wounds" by QuinnXCII binge then just go through the other weeks in the above list and they will return different lists of what you listened to that week around the song. Try a different week, maybe it was longer ago than you think or vice versa. 
+
+
+
+
+

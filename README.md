@@ -32,7 +32,7 @@ with qualitative meaning to inform user-centered product decisions.
 - Qualitative inference layered on quantitative signals  
 - RMarkdown for reproducible research and narrative reporting
 
-##Music Platform Ideas
+## Music Platform Ideas
 
 This workshop is also a place where I think through ideas for music-platform features, recommendation behavior, and the overall listening experience.
 Some ideas come directly from patterns I notice in my own listening data. Others come from asking what a platform could do differently to help people stay connected to the music they actually want to hear.
